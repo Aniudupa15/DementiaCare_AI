@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "1094288950573",
+    "firebase_url": "https://dementia-assist-d6d2c-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "dementia-assist-d6d2c",
+    "storage_bucket": "dementia-assist-d6d2c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1094288950573:android:5c81b11fe993ca8772ffa4",
+        "android_client_info": {
+          "package_name": "com.example.dementia_assist_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1JYxFuxEevgRfKP6LigGo4HW9PA-TLxs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1094288950573:android:ba641a7879ad83d172ffa4",
+        "android_client_info": {
+          "package_name": "com.myapp.dementia_assist"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1JYxFuxEevgRfKP6LigGo4HW9PA-TLxs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
