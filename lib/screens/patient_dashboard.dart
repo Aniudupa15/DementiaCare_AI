@@ -15,141 +15,121 @@ class PatientDashboard extends StatefulWidget {
 }
 
 class _PatientDashboardState extends State<PatientDashboard> {
-  final String patientUid = 'test_patient_123'; // temporary
-  final String caregiverUid = 'test_caregiver_123'; // temporary
+  final String patientUid = 'test_patient_123';
+  final String caregiverUid = 'test_caregiver_123';
 
   late final ChatService _chatService;
-  final _controller = TextEditingController();
-  final _scrollController = ScrollController();
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollCtrl = ScrollController();
   final _db = FirebaseDatabase.instance.ref();
 
   Map<String, dynamic> _reminders = {};
 
-  // 🎤 Speech-to-Text
-  late stt.SpeechToText speech;
-  bool isListening = false;
+  // STT
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
 
-  // 🔊 Text-to-Speech
-  late FlutterTts flutterTts;
-
+  // TTS
+  late FlutterTts _tts;
+  bool _isBotSpeaking = false;
   String selectedLanguage = "en-US";
   String selectedGender = "female";
+
+  String _lastSpokenMessage = ""; // prevents repeat reading
 
   @override
   void initState() {
     super.initState();
 
-    // Chat + Reminders
     _chatService = ChatService(patientUid: patientUid);
-    _initializeReminders();
-    _autoScrollMessages();
+    _speech = stt.SpeechToText();
+    _tts = FlutterTts();
 
-    // Initialize STT
-    speech = stt.SpeechToText();
-
-    // Initialize TTS
     _initTTS();
+    _listenForChatUpdates();
+    _initializeReminders();
   }
 
-  // --------------------- TTS Initialization ---------------------
+  // ---------------- TTS ----------------
   Future<void> _initTTS() async {
-    flutterTts = FlutterTts();
+    await _tts.setLanguage("en-US");
+    await _tts.setSpeechRate(0.45);
+    await _tts.setPitch(0.9);
+    await _tts.setVolume(1.0);
 
-    await flutterTts.setLanguage("en-US");
-    await flutterTts.setPitch(0.9);
-    await flutterTts.setSpeechRate(0.45);
-    await flutterTts.setVolume(1.0);
+    _tts.setCompletionHandler(() {
+      if (mounted) setState(() => _isBotSpeaking = false);
+    });
 
-    await setVoiceGender("female");
-  }
-
-  Future<void> changeLanguage(String langCode) async {
-    setState(() => selectedLanguage = langCode);
-    await flutterTts.setLanguage(langCode);
-    await flutterTts.setPitch(0.9);
-    await flutterTts.setSpeechRate(0.45);
+    setVoiceGender("female");
   }
 
   Future<void> setVoiceGender(String gender) async {
     selectedGender = gender;
+    final voices = await _tts.getVoices;
 
-    var voices = await flutterTts.getVoices;
-    var selected = voices.firstWhere(
-      (v) => v["name"].toString().toLowerCase().contains(gender),
-      orElse: () => voices.first,
+    final selected = voices.firstWhere(
+          (v) => v["name"].toString().toLowerCase().contains(gender),
+      orElse: () => voices.isNotEmpty ? voices.first : {"name": "", "locale": "en-US"},
     );
 
-    await flutterTts.setVoice({
-      "name": selected["name"],
-      "locale": selected["locale"],
-    });
-  }
-
-  Future<void> speak(String text) async {
-    await flutterTts.stop();
-    await flutterTts.speak(text);
-  }
-
-  // --------------------- Speech Recognition ---------------------
-  void startListening() async {
-    bool available = await speech.initialize();
-
-    if (available) {
-      setState(() => isListening = true);
-
-      speech.listen(
-        onResult: (result) {
-          setState(() {
-            _controller.text = result.recognizedWords;
-          });
-        },
-      );
+    if (selected["name"] != null && selected["name"] != "") {
+      await _tts.setVoice({
+        "name": selected["name"],
+        "locale": selected["locale"],
+      });
     }
   }
 
-  void stopListening() {
-    speech.stop();
-    setState(() => isListening = false);
+  Future<void> changeLanguage(String lang) async {
+    selectedLanguage = lang;
+    await _tts.setLanguage(lang);
   }
 
-  // --------------------- Reminder Initialization ---------------------
-  void _initializeReminders() {
-    ReminderService.init();
-    ReminderService.requestPermissionIfNeeded();
+  Future<void> _speak(String text) async {
+    if (_lastSpokenMessage == text) return; // prevent duplicate speaking
+    _lastSpokenMessage = text;
 
-    _db.child('reminders/$patientUid').onValue.listen((event) {
-      final data = (event.snapshot.value as Map?) ?? {};
+    await _tts.stop();
+    setState(() => _isBotSpeaking = true);
+    await _tts.speak(text);
+  }
 
-      setState(() {
-        _reminders = data.map(
-          (key, val) => MapEntry(key, Map<String, dynamic>.from(val)),
-        );
-      });
+  // ---------------- STT ----------------
+  void startListening() async {
+    final ok = await _speech.initialize();
+    if (!ok) return;
 
-      for (var entry in _reminders.entries) {
-        final reminder = entry.value;
-        final iso = reminder['timeIso'] as String?;
-        if (iso == null) continue;
+    setState(() => _isListening = true);
 
-        final when = DateTime.tryParse(iso);
-        if (when == null || !when.isAfter(DateTime.now())) continue;
-
-        ReminderService.scheduleOneTime(
-          title: "Reminder: ${reminder['title']}",
-          body: "It’s time for: ${reminder['title']}",
-          when: when,
-        );
-      }
+    _speech.listen(onResult: (result) {
+      setState(() => _controller.text = result.recognizedWords);
     });
   }
 
-  // --------------------- Auto Scroll Chat ---------------------
-  void _autoScrollMessages() {
-    _chatService.getMessagesStream().listen((_) {
+  void stopListening() {
+    _speech.stop();
+    setState(() => _isListening = false);
+  }
+
+  // ---------------- Listen for chat updates ----------------
+  void _listenForChatUpdates() {
+    _chatService.messagesStream.listen((msgs) {
+      if (msgs.isNotEmpty) {
+        final last = msgs.last;
+
+        if (last.senderId != patientUid) {
+          Future.delayed(const Duration(milliseconds: 300), () {
+            _speak(last.text);
+          });
+        }
+      }
+
+      // Auto-scroll
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            _scrollController.position.maxScrollExtent,
+        if (_scrollCtrl.hasClients) {
+          _scrollCtrl.animateTo(
+            _scrollCtrl.position.maxScrollExtent,
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeOut,
           );
@@ -158,91 +138,135 @@ class _PatientDashboardState extends State<PatientDashboard> {
     });
   }
 
-  // --------------------- Mark Reminder Completed ---------------------
-  Future<void> markCompleted(String reminderId, String title) async {
-    await _db.child("reminders/$patientUid/$reminderId").update({
-      "status": "completed",
-      "completedAt": DateTime.now().toIso8601String(),
-    });
+  // ---------------- Reminders ----------------
+  void _initializeReminders() {
+    ReminderService.init();
+    ReminderService.requestPermissionIfNeeded();
 
-    await _db.child("caregivers/$caregiverUid/notifications").push().set({
-      "message": "Patient completed: $title",
-      "time": DateTime.now().toIso8601String(),
+    _db.child("reminders/$patientUid").onValue.listen((event) {
+      final raw = event.snapshot.value;
+      if (raw == null) {
+        setState(() => _reminders = {});
+        return;
+      }
+
+      final mapped = Map<String, dynamic>.from(raw as Map);
+
+      setState(() => _reminders = mapped);
+
+      // Schedule reminders
+      for (var entry in mapped.entries) {
+        final r = Map<String, dynamic>.from(entry.value as Map);
+        final iso = r["timeIso"] as String?;
+
+        if (iso != null) {
+          final dt = DateTime.tryParse(iso);
+          if (dt != null && dt.isAfter(DateTime.now())) {
+            ReminderService.scheduleOneTime(
+              title: "Reminder: ${r['title']}",
+              body: "It's time for: ${r['title']}",
+              when: dt,
+            );
+          }
+        }
+      }
     });
   }
 
-  void _sendMessage() {
+  // ---------------- Send message ----------------
+  Future<void> _sendMessage() async {
     final text = _controller.text.trim();
-    if (text.isNotEmpty) {
-      _chatService.sendPatientMessage(text);
-      _controller.clear();
+    if (text.isEmpty) return;
+
+    _controller.clear();
+    await _chatService.sendMessage(text);
+  }
+
+  // ---------------- Mark reminder completed ----------------
+  Future<void> markCompleted(String reminderId, String title) async {
+    try {
+      // Update reminder status
+      await _db.child("reminders/$patientUid/$reminderId").update({
+        "status": "completed",
+        "completedAt": DateTime.now().toIso8601String(),
+      });
+
+      // Notify caregiver (push notification entry in DB)
+      await _db.child("caregivers/$caregiverUid/notifications").push().set({
+        "message": "Patient completed: $title",
+        "time": DateTime.now().toIso8601String(),
+        "patientId": patientUid,
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Marked "$title" as completed')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to mark reminder: $e')),
+        );
+      }
     }
   }
 
+  // ---------------- Dispose ----------------
   @override
   void dispose() {
     _controller.dispose();
-    _scrollController.dispose();
-    flutterTts.stop();
+    _scrollCtrl.dispose();
+    _tts.stop();
+    _speech.cancel();
     super.dispose();
   }
 
-  // ----------------------------- UI -----------------------------
+  // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
-    final remindersList = _reminders.entries.toList()
-      ..sort((a, b) =>
-          (a.value['timeIso'] ?? '').compareTo(b.value['timeIso'] ?? ''));
+    final sortedReminders = _reminders.entries.toList()
+      ..sort((a, b) {
+        final t1 = a.value["timeIso"] ?? "";
+        final t2 = b.value["timeIso"] ?? "";
+        return t1.compareTo(t2);
+      });
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Patient Dashboard')),
+      appBar: AppBar(
+        title: const Text("Patient Dashboard"),
+      ),
       body: Column(
         children: [
           _buildLanguageAndVoiceControls(),
-
-          // ---------------- Reminders ----------------
-          _buildReminders(remindersList),
-
+          _buildReminders(sortedReminders),
           const Divider(),
-
-          // ---------------- Chat ----------------
           Expanded(
             child: StreamBuilder<List<ChatMessage>>(
-              stream: _chatService.getMessagesStream(),
-              builder: (context, snapshot) {
+              stream: _chatService.messagesStream,
+              builder: (_, snapshot) {
                 if (!snapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final messages = snapshot.data!;
+                final msgs = snapshot.data!;
+
                 return ListView.builder(
-                  controller: _scrollController,
+                  controller: _scrollCtrl,
                   padding: const EdgeInsets.all(10),
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    final msg = messages[index];
-
-                    // 🔊 Speak AI responses
-                    if (msg.senderId != patientUid) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        speak(msg.text);
-                      });
-                    }
-
-                    return _buildMessageBubble(msg);
-                  },
+                  itemCount: msgs.length,
+                  itemBuilder: (_, i) => _buildMessageBubble(msgs[i]),
                 );
               },
             ),
           ),
-
           _buildMessageInput(),
         ],
       ),
     );
   }
 
-  // ---------------- UI Widgets ----------------
+  // ---------------- Widgets ----------------
 
   Widget _buildLanguageAndVoiceControls() {
     return Row(
@@ -256,67 +280,59 @@ class _PatientDashboardState extends State<PatientDashboard> {
             DropdownMenuItem(value: "te-IN", child: Text("Telugu")),
             DropdownMenuItem(value: "ta-IN", child: Text("Tamil")),
           ],
-          onChanged: (lang) => changeLanguage(lang!),
+          onChanged: (v) => changeLanguage(v!),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         DropdownButton(
           value: selectedGender,
           items: const [
             DropdownMenuItem(value: "female", child: Text("Female Voice")),
             DropdownMenuItem(value: "male", child: Text("Male Voice")),
           ],
-          onChanged: (gender) => setVoiceGender(gender!),
+          onChanged: (v) => setVoiceGender(v!),
         ),
       ],
     );
   }
 
-  Widget _buildReminders(List remindersList) {
+  Widget _buildReminders(List reminders) {
     return Container(
+      padding: const EdgeInsets.all(10),
       color: Colors.teal.shade50,
-      padding: const EdgeInsets.all(8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Upcoming Reminders 🕒',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 4),
-          if (remindersList.isEmpty) const Text('No reminders yet'),
-          ...remindersList.map((r) {
-            final reminder = r.value;
+          const Text("Upcoming Reminders 🕒",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          if (reminders.isEmpty) const Text("No reminders available"),
+          ...reminders.map((entry) {
+            final reminder = Map<String, dynamic>.from(entry.value);
+            final key = entry.key as String;
 
             return Card(
               child: ListTile(
                 leading: const Icon(Icons.alarm, color: Colors.teal),
-                title: Text(reminder['title']),
-                subtitle: Text(reminder['timeIso']),
-                trailing: reminder['status'] == 'completed'
-                    ? const Text(
-                        "Completed",
-                        style: TextStyle(
-                          color: Colors.green,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      )
+                title: Text(reminder["title"] ?? "Untitled"),
+                subtitle: Text(reminder["timeIso"] ?? "--"),
+                trailing: reminder["status"] == "completed"
+                    ? const Text("Completed",
+                    style: TextStyle(color: Colors.green))
                     : ElevatedButton(
-                        onPressed: () => markCompleted(
-                          r.key,
-                          reminder['title'],
-                        ),
-                        child: const Text("Done"),
-                      ),
+                  onPressed: () =>
+                      markCompleted(key, reminder["title"] ?? "Reminder"),
+                  child: const Text("Done"),
+                ),
               ),
             );
-          }),
+          })
         ],
       ),
     );
   }
 
-  Widget _buildMessageBubble(ChatMessage message) {
-    final isUser = message.senderId == patientUid;
+  Widget _buildMessageBubble(ChatMessage msg) {
+    final isUser = msg.senderId == patientUid;
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -326,47 +342,42 @@ class _PatientDashboardState extends State<PatientDashboard> {
           color: isUser ? Colors.blue.shade100 : Colors.grey.shade300,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Text(message.text),
+        child: Text(msg.text),
       ),
     );
   }
 
   Widget _buildMessageInput() {
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _controller,
-              decoration: const InputDecoration(
-                hintText: 'Type a message...',
-                border: OutlineInputBorder(),
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                decoration: const InputDecoration(
+                  hintText: "Type a message...",
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (_) => _sendMessage(),
               ),
-              onSubmitted: (_) => _sendMessage(),
             ),
-          ),
-
-          const SizedBox(width: 6),
-
-          // 🎤 Microphone
-          IconButton(
-            icon: Icon(
-              isListening ? Icons.mic : Icons.mic_none,
-              color: isListening ? Colors.red : Colors.grey,
-              size: 26,
+            const SizedBox(width: 6),
+            IconButton(
+              icon: Icon(
+                _isListening ? Icons.mic : Icons.mic_none,
+                color: _isListening ? Colors.red : Colors.grey,
+                size: 26,
+              ),
+              onPressed: () => _isListening ? stopListening() : startListening(),
             ),
-            onPressed: () {
-              isListening ? stopListening() : startListening();
-            },
-          ),
-
-          // Send
-          IconButton(
-            icon: const Icon(Icons.send, color: Colors.teal, size: 26),
-            onPressed: _sendMessage,
-          ),
-        ],
+            IconButton(
+              icon: const Icon(Icons.send, color: Colors.teal, size: 26),
+              onPressed: _sendMessage,
+            ),
+          ],
+        ),
       ),
     );
   }

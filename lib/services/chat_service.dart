@@ -1,42 +1,130 @@
-import 'package:firebase_database/firebase_database.dart';
+// chat_service.dart — REST-based Gemini Chat (Production Ready)
+
+import 'dart:async';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
 import '../models/chat_message.dart';
 
 class ChatService {
-  final String patientUid;
-  final DatabaseReference _chatRef;
+  static const String apiKey = 'AIzaSyDcfZz19NIJe8Zy1mmm3J01cKUQgrllUeY';
+  static const String baseUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent';
 
-  ChatService({required this.patientUid})
-      : _chatRef = FirebaseDatabase.instance.ref('chats/$patientUid/messages') {
-    // 👇 use emulator for local testing
-    //FirebaseDatabase.instance.useDatabaseEmulator('127.0.0.1', 9000);
+  final String patientUid;
+  final List<ChatMessage> _messages = [];
+  final StreamController<List<ChatMessage>> _messagesController =
+  StreamController<List<ChatMessage>>.broadcast();
+
+  ChatService({required this.patientUid}) {
+    _addBotMessage(
+        "Hello! I'm your health assistant. How can I support you today?");
   }
 
-  /// Send patient message to Firebase
-  Future<void> sendPatientMessage(String text) async {
+  Stream<List<ChatMessage>> get messagesStream =>
+      _messagesController.stream;
+
+  void dispose() {
+    _messagesController.close();
+  }
+
+  // ---------------------------
+  // INTERNAL HELPERS
+  // ---------------------------
+
+  void _addBotMessage(String text) {
     final message = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      senderId: "bot",
+      text: text,
+      timestamp: DateTime.now(),
+      isBot: true,
+    );
+
+    _messages.add(message);
+    _messagesController.add(List.from(_messages));
+  }
+
+  void _addUserMessage(String text) {
+    final message = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
       senderId: patientUid,
       text: text,
-      emotion: 'neutral',
       timestamp: DateTime.now(),
+      isBot: false,
     );
-    await _chatRef.push().set(message.toJson());
+
+    _messages.add(message);
+    _messagesController.add(List.from(_messages));
   }
 
-  /// Stream messages in real time
-  Stream<List<ChatMessage>> getMessagesStream() {
-    return _chatRef.onValue.map((event) {
-      final data = event.snapshot.value;
-      if (data == null) return [];
+  // ---------------------------
+  // PUBLIC API
+  // ---------------------------
 
-      final Map<dynamic, dynamic> messagesMap = data as Map<dynamic, dynamic>;
+  Future<void> sendMessage(String userMessage) async {
+    _addUserMessage(userMessage);
 
-      final messages = messagesMap.entries.map((entry) {
-        final value = Map<String, dynamic>.from(entry.value);
-        return ChatMessage.fromJson(value);
-      }).toList();
+    try {
+      final reply = await _getBotResponse(userMessage);
+      _addBotMessage(reply);
+    } catch (e) {
+      _addBotMessage(
+          "I’m having trouble connecting right now. Please try again.");
+    }
+  }
 
-      messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-      return messages;
-    });
+  // ---------------------------
+  // GEMINI REQUEST
+  // ---------------------------
+
+  Future<String> _getBotResponse(String userMsg) async {
+    final history = _messages
+        .map((m) => "${m.isBot ? 'Assistant' : 'User'}: ${m.text}")
+        .join('\n');
+
+    final prompt = '''
+You are a medical support assistant.  
+Provide clear, empathetic, medically accurate guidance.  
+Do NOT give serious diagnosis or emergency advice.  
+For emergencies: always recommend calling local emergency services.
+
+CONVERSATION HISTORY:
+$history
+
+USER MESSAGE:
+$userMsg
+
+Respond clearly and concisely.
+''';
+
+    final response = await http.post(
+      Uri.parse("$baseUrl?key=$apiKey"),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        "contents": [
+          {
+            "parts": [
+              {"text": prompt}
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 0.35,
+          "maxOutputTokens": 500
+        }
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final body = jsonDecode(response.body);
+      final text =
+          body["candidates"][0]["content"]["parts"][0]["text"] ?? "";
+
+      return text.trim();
+    } else {
+      print("Gemini error: ${response.body}");
+      return "Sorry, I could not process that. Please try again.";
+    }
   }
 }

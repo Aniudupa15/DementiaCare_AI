@@ -1,33 +1,35 @@
 class ChatMessage {
+  final String id;
   final String senderId;
   final String text;
-  final String emotion;
   final DateTime timestamp;
+  final bool isBot;
 
   ChatMessage({
+    required this.id,
     required this.senderId,
     required this.text,
-    required this.emotion,
     required this.timestamp,
+    required this.isBot,
   });
 
-  /// ✅ Convert to Map for Firebase
-  Map<String, dynamic> toJson() {
+  Map<String, dynamic> toMap() {
     return {
+      'id': id,
       'senderId': senderId,
       'text': text,
-      'emotion': emotion,
-      'timestamp': timestamp.toIso8601String(), // convert DateTime → String
+      'timestamp': timestamp.millisecondsSinceEpoch,
+      'isBot': isBot,
     };
   }
 
-  /// ✅ Convert from Map (Firebase → ChatMessage)
-  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+  factory ChatMessage.fromMap(Map<String, dynamic> map) {
     return ChatMessage(
-      senderId: json['senderId'] ?? '',
-      text: json['text'] ?? '',
-      emotion: json['emotion'] ?? 'neutral',
-      timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
+      id: map['id'] ?? '',
+      senderId: map['senderId'] ?? '',
+      text: map['text'] ?? '',
+      timestamp: DateTime.fromMillisecondsSinceEpoch(map['timestamp'] ?? 0),
+      isBot: map['isBot'] ?? false,
     );
   }
 }
